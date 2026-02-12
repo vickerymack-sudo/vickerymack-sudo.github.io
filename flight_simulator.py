@@ -309,26 +309,6 @@ def print_summary(state: FlightState) -> None:
 def run_game() -> None:
     print(
         """
-======================================================================
- VERBAL FLIGHT SIMULATOR - EMERGENCY MODE
-======================================================================
-You are actively flying a twin-engine jet to a diversion airport.
-Failures will escalate. Fly the airplane and handle emergencies.
-Type 'help' for commands.
-"""
-    )
-
-    state = FlightState()
-
-    while not state.game_over and state.time_min < 40:
-        print_hud(state)
-        incident_brief(state)
-        command = input("\nCommand> ")
-        advance_time = apply_command(state, command)
-
-        if advance_time:
-            state.time_min += 1
-            apply_flight_physics(state)
 
     print_summary(state)
 
