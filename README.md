@@ -1,45 +1,37 @@
-# Verbal Flight Simulator (Emergency Scenario)
+# Verbal Flight Simulator (Visual Emergency Mode)
 
-This is an interactive terminal flight simulator where you **actively fly the plane** while handling an emergency chain.
+You asked for visuals like a real simulator experience, so this version runs in a **live graphical window** with an attitude horizon, runway cue, cockpit-style HUD, and real-time controls.
 
-## What makes this different
-Instead of only choosing story options, you now control flight parameters in real time:
-- Throttle
-- Pitch (climb/descend)
-- Heading (turn left/right)
-- Flaps
-- Landing gear
+> Note: this is a lightweight 2D simulator and **not a full 3D Microsoft Flight Simulator clone**.
 
-At the same time, incidents escalate (engine smoke -> engine fire -> cabin smoke), and you must run emergency actions like:
-- `declare mayday`
-- `shutdown eng2`
-- `fire bottle`
-- `oxygen on`
+## Features
+- Real-time visual cockpit/horizon rendering (Tkinter canvas)
+- Flight controls: throttle, pitch, bank, flaps, gear
+- Emergency chain: engine smoke -> engine fire -> cabin smoke
+- Emergency actions: MAYDAY, engine shutdown, fire bottle, oxygen
+- Landing evaluation based on speed, alignment, and configuration
 
-## Run
+## Run (visual mode)
 ```bash
 python3 flight_simulator.py
 ```
 
-## Core commands
-- `help`
-- `status`
-- `throttle 70`
-- `pitch -1`
-- `turn L 20`
-- `flaps 2`
-- `gear down`
-- `declare mayday`
-- `fire bottle`
-- `shutdown eng2`
-- `oxygen on`
-- `tick`
+## Controls
+- `W / S` : throttle up / down
+- `Up / Down` : pitch up / down
+- `Left / Right` : bank left / right
+- `Space` : dampen bank/pitch
+- `F` : cycle flaps (0-3)
+- `G` : toggle landing gear
+- `M` : declare MAYDAY
+- `E` : shutdown engine 2
+- `B` : discharge fire bottle
+- `O` : toggle oxygen
+- `Q` : quit
 
-## Win condition
-Get to the diversion airport and land in a stable configuration:
-- Correct speed
-- Proper heading alignment
-- Gear down
-- Landing flaps set
+## Headless demo mode (for non-GUI environments)
+```bash
+python3 flight_simulator.py --demo --demo-seconds 20
+```
 
-Poor energy management or delayed emergency response can still cause loss of control or a crash landing.
+This runs the same physics/emergency core and prints state updates to terminal.
