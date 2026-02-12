@@ -1,234 +1,314 @@
 #!/usr/bin/env python3
-"""Text-based flight incident simulator.
+"""Interactive text flight simulator with emergency incidents.
 
-The player responds to escalating in-flight failures.
-Each decision affects safety, aircraft status, and final outcome.
+You actively fly the aircraft using control commands while handling failures.
 """
 
 from dataclasses import dataclass
-from typing import Callable
 
 
 @dataclass
 class FlightState:
-    altitude_ft: int = 33000
-    airspeed_kts: int = 280
-    engine_fire: bool = False
-    smoke_in_cabin: bool = False
-    electrical_failure: bool = False
-    fuel_imbalance: bool = False
+    time_min: int = 0
+    distance_nm: float = 110.0
+    altitude_ft: int = 32000
+    speed_kts: int = 290
+    heading_deg: int = 270
+
+    throttle: int = 68
+    pitch_cmd: int = 0  # -2 descend, -1 slight descend, 0 hold, 1 climb, 2 steep climb
+    flaps: int = 0
+    gear_down: bool = False
+
+    engine1_on: bool = True
+    engine2_on: bool = True
+    engine2_fire: bool = False
+    smoke_level: int = 0  # 0 none, 1 light, 2 heavy
+
+    airport_heading_deg: int = 270
+    emergency_declared: bool = False
+    fire_bottle_used: bool = False
+
     score: int = 0
     game_over: bool = False
+    landed: bool = False
 
 
-def ask_choice(prompt: str, options: dict[str, str]) -> str:
-    print("\n" + prompt)
-    for key, text in options.items():
-        print(f"  {key}) {text}")
-
-    while True:
-        choice = input("Choose an action: ").strip().lower()
-        if choice in options:
-            return choice
-        print("Invalid choice. Try again.")
+def clamp(value: int, low: int, high: int) -> int:
+    return max(low, min(high, value))
 
 
-def apply_outcome(state: FlightState, success: bool, message: str) -> None:
-    print(f"\n{message}")
-    state.score += 15 if success else -10
-    if not success:
-        state.airspeed_kts = max(160, state.airspeed_kts - 15)
+def normalize_heading(heading: int) -> int:
+    value = heading % 360
+    return value if value != 0 else 360
 
 
-def engine_smoke_event(state: FlightState) -> None:
-    print("\n--- INCIDENT 1: ENGINE SMOKE ---")
-    print("Warning lights: ENG 2 OIL PRESS LOW + visible gray smoke trail.")
+def heading_delta(current: int, target: int) -> int:
+    raw = (target - current + 540) % 360 - 180
+    return raw
 
-    choice = ask_choice(
-        "What do you do first?",
-        {
-            "a": "Throttle back engine 2 and run memory items for smoke/fire.",
-            "b": "Ignore it until ATC asks about the smoke.",
-            "c": "Shut down both engines to be safe.",
-        },
+
+def print_hud(state: FlightState) -> None:
+    print("\n" + "=" * 70)
+    print(
+        f"T+{state.time_min:02d}m | DIST {state.distance_nm:05.1f}nm | ALT {state.altitude_ft:05d}ft "
+        f"| SPD {state.speed_kts:03d}kt | HDG {state.heading_deg:03d}"
+    )
+    print(
+        f"THR {state.throttle:02d}% | PITCH {state.pitch_cmd:+d} | FLAPS {state.flaps} "
+        f"| GEAR {'DOWN' if state.gear_down else 'UP'}"
+    )
+    print(
+        f"ENG1 {'ON' if state.engine1_on else 'OFF'} | ENG2 {'ON' if state.engine2_on else 'OFF'} "
+        f"| FIRE2 {'YES' if state.engine2_fire else 'NO'} | SMOKE {state.smoke_level}"
+    )
+    print(f"ATC airport bearing {state.airport_heading_deg:03d}° | Score {state.score}")
+
+
+def print_help() -> None:
+    print(
+        """
+Commands:
+  status                     show current aircraft state
+  help                       show commands
+  throttle <0-100>           set throttle
+  pitch <-2..2>              set vertical control
+  turn <L/R> <degrees>       turn heading (example: turn L 20)
+  flaps <0|1|2|3>            set flaps
+  gear up|down               landing gear control
+  declare mayday             declare emergency for score bonus
+  fire bottle                discharge extinguisher on engine 2 fire
+  shutdown eng2              shutdown engine 2
+  oxygen on                  cockpit oxygen masks on (helps with smoke)
+  tick                       hold current controls for one minute
+"""
     )
 
-    if choice == "a":
-        state.smoke_in_cabin = True
-        apply_outcome(
-            state,
-            True,
-            "Good call. Engine 2 is isolated, but smoke starts entering the cabin ducts.",
-        )
-    elif choice == "b":
-        state.engine_fire = True
-        apply_outcome(
-            state,
-            False,
-            "Delay worsens the fault. Smoke thickens and engine 2 catches fire.",
-        )
-    else:
-        state.electrical_failure = True
-        apply_outcome(
-            state,
-            False,
-            "Both engines offline causes rapid power loss and major electrical failures.",
-        )
+
+def incident_brief(state: FlightState) -> None:
+    if state.time_min == 1:
+        print("\nALERT: ENG2 OIL PRESS LOW. You see a thin smoke trail from engine 2.")
+        state.score -= 2
+    if state.time_min == 3 and state.engine2_on:
+        print("\nALERT: Smoke worsens and ENG2 FIRE warning activates.")
+        state.engine2_fire = True
+        state.smoke_level = max(state.smoke_level, 1)
+    if state.time_min == 5:
+        print("\nCABIN REPORT: Smoke entering cabin. Immediate handling required.")
+        state.smoke_level = max(state.smoke_level, 1)
 
 
-def engine_fire_event(state: FlightState) -> None:
-    print("\n--- INCIDENT 2: ENGINE FIRE ---")
+def apply_flight_physics(state: FlightState) -> None:
+    engine_count = int(state.engine1_on) + int(state.engine2_on)
 
-    if not state.engine_fire:
-        state.engine_fire = True
-        print("A sudden bang! Fire warning activates for engine 2.")
-    else:
-        print("Fire warning persists. EGT is climbing dangerously.")
+    # Fire progression
+    if state.engine2_fire:
+        state.smoke_level = min(2, state.smoke_level + 1)
+        state.score -= 4
+        if state.time_min >= 9 and state.engine2_on:
+            print("\nCRITICAL: Engine 2 suffers uncontained failure due to prolonged fire.")
+            state.game_over = True
+            return
 
-    choice = ask_choice(
-        "How do you respond?",
-        {
-            "a": "Discharge first fire bottle, declare MAYDAY, begin diversion.",
-            "b": "Keep climbing to cruise altitude before handling checklist.",
-            "c": "Deploy landing gear now to slow down quickly.",
-        },
-    )
+    # Thrust model
+    base_thrust = state.throttle
+    if engine_count == 1:
+        base_thrust -= 18
+    elif engine_count == 0:
+        base_thrust = 0
 
-    if choice == "a":
-        state.engine_fire = False
-        state.altitude_ft -= 6000
-        apply_outcome(
-            state,
-            True,
-            "Excellent emergency management. Fire warning extinguished and diversion begun.",
-        )
-    elif choice == "b":
-        state.fuel_imbalance = True
-        apply_outcome(
-            state,
-            False,
-            "Fire keeps burning during climb. Wing structure starts overheating.",
-        )
-    else:
-        state.airspeed_kts = max(170, state.airspeed_kts - 40)
-        apply_outcome(
-            state,
-            False,
-            "Gear overspeed risk triggered and drag spikes. Fire remains unresolved.",
-        )
+    if state.flaps > 0:
+        base_thrust -= state.flaps * 4
+    if state.gear_down:
+        base_thrust -= 10
 
+    # Speed update
+    speed_change = (base_thrust - 55) // 5 - state.pitch_cmd * 3
+    state.speed_kts = clamp(state.speed_kts + speed_change, 120, 360)
 
-def cabin_smoke_event(state: FlightState) -> None:
-    print("\n--- INCIDENT 3: CABIN SMOKE ---")
-    state.smoke_in_cabin = True
-    print("Cabin crew reports dense smoke in the aft cabin.")
+    # Altitude update
+    climb_rate_fpm = state.pitch_cmd * 900 + max(0, (state.throttle - 55) * 12) - 350
+    if engine_count == 1:
+        climb_rate_fpm -= 600
+    if engine_count == 0:
+        climb_rate_fpm -= 2000
 
-    choice = ask_choice(
-        "What is your next priority?",
-        {
-            "a": "Crew oxygen masks ON, emergency descent, smoke checklist.",
-            "b": "Ask cabin crew to open cockpit door for ventilation.",
-            "c": "Turn off all electrical busses immediately.",
-        },
-    )
+    if state.flaps >= 2:
+        climb_rate_fpm -= 400
+    if state.gear_down:
+        climb_rate_fpm -= 500
 
-    if choice == "a":
-        state.altitude_ft = 10000
-        apply_outcome(
-            state,
-            True,
-            "Correct priorities: aviate, navigate, communicate. Cabin conditions improve.",
-        )
-    elif choice == "b":
+    state.altitude_ft = clamp(state.altitude_ft + climb_rate_fpm, 0, 41000)
+
+    # Distance closure (rough)
+    turn_penalty = abs(heading_delta(state.heading_deg, state.airport_heading_deg)) / 90
+    closure = max(0.2, state.speed_kts / 130 - turn_penalty)
+    state.distance_nm = max(0.0, state.distance_nm - closure)
+
+    # Operational risks
+    if state.smoke_level == 2 and state.altitude_ft > 12000:
+        print("\nWARNING: Heavy smoke at high altitude. Descend and use oxygen.")
+        state.score -= 3
+
+    if state.gear_down and state.speed_kts > 220:
+        print("\nDAMAGE: Gear overspeed! Structural stress increased.")
+        state.score -= 8
+
+    if state.altitude_ft < 1000 and state.speed_kts < 135 and not state.landed:
+        print("\nSTALL WARNING near ground.")
+        state.score -= 10
+
+    # Landing check
+    if state.distance_nm <= 0.6 and state.altitude_ft <= 80:
+        evaluate_landing(state)
+
+    # Crash checks
+    if state.altitude_ft == 0 and not state.landed:
+        print("\nIMPACT: uncontrolled contact with terrain.")
         state.game_over = True
-        apply_outcome(
-            state,
-            False,
-            "Smoke enters cockpit heavily. Visibility loss leads to loss of control.",
-        )
-    else:
-        state.electrical_failure = True
-        apply_outcome(
-            state,
-            False,
-            "Critical avionics drop offline. You now have partial instrument capability.",
-        )
 
 
-def final_approach(state: FlightState) -> None:
-    print("\n--- FINAL PHASE: DIVERSION LANDING ---")
-    print("You are lined up for an emergency landing at the nearest suitable airport.")
-
-    choice = ask_choice(
-        "How do you configure for landing?",
-        {
-            "a": "Stabilized approach, single-engine profile, long runway.",
-            "b": "Fast approach to minimize smoke exposure.",
-            "c": "Circle once more to troubleshoot systems.",
-        },
+def evaluate_landing(state: FlightState) -> None:
+    stable = (
+        128 <= state.speed_kts <= 170
+        and state.flaps >= 2
+        and state.gear_down
+        and abs(heading_delta(state.heading_deg, state.airport_heading_deg)) <= 20
     )
-
-    if choice == "a":
-        apply_outcome(
-            state,
-            True,
-            "Smooth touchdown. Aircraft stops safely and emergency crews inspect the jet.",
-        )
-    elif choice == "b":
+    if stable:
+        state.landed = True
         state.game_over = True
-        apply_outcome(
-            state,
-            False,
-            "Unstable approach ends in runway excursion.",
-        )
+        state.score += 25
+        print("\nTOUCHDOWN: You landed safely at the diversion airport.")
     else:
         state.game_over = True
-        apply_outcome(
-            state,
-            False,
-            "Additional delay causes fire re-ignition before landing.",
-        )
+        state.score -= 25
+        print("\nRUNWAY ACCIDENT: Unstable approach caused a crash landing.")
+
+
+def apply_command(state: FlightState, cmd: str) -> bool:
+    """Apply command. Return True if one minute should advance."""
+    parts = cmd.strip().lower().split()
+    if not parts:
+        return False
+
+    if parts[0] == "help":
+        print_help()
+        return False
+
+    if parts[0] == "status":
+        print_hud(state)
+        return False
+
+    if parts[0] == "throttle" and len(parts) == 2 and parts[1].isdigit():
+        state.throttle = clamp(int(parts[1]), 0, 100)
+        return True
+
+    if parts[0] == "pitch" and len(parts) == 2:
+        try:
+            state.pitch_cmd = clamp(int(parts[1]), -2, 2)
+            return True
+        except ValueError:
+            pass
+
+    if parts[0] == "turn" and len(parts) == 3:
+        side = parts[1]
+        try:
+            degrees = clamp(int(parts[2]), 0, 180)
+            if side == "l":
+                state.heading_deg = normalize_heading(state.heading_deg - degrees)
+                return True
+            if side == "r":
+                state.heading_deg = normalize_heading(state.heading_deg + degrees)
+                return True
+        except ValueError:
+            pass
+
+    if parts[0] == "flaps" and len(parts) == 2 and parts[1].isdigit():
+        state.flaps = clamp(int(parts[1]), 0, 3)
+        return True
+
+    if parts[0] == "gear" and len(parts) == 2:
+        if parts[1] == "down":
+            state.gear_down = True
+            return True
+        if parts[1] == "up":
+            state.gear_down = False
+            return True
+
+    if cmd.strip().lower() == "declare mayday":
+        if not state.emergency_declared:
+            state.emergency_declared = True
+            state.score += 8
+            print("ATC: MAYDAY received. Cleared direct nearest airport.")
+        else:
+            print("ATC: Emergency already declared.")
+        return True
+
+    if cmd.strip().lower() == "fire bottle":
+        if state.engine2_fire and not state.fire_bottle_used:
+            state.engine2_fire = False
+            state.fire_bottle_used = True
+            state.score += 12
+            print("Engine 2 fire warning extinguished.")
+        elif state.fire_bottle_used:
+            print("No fire bottles remaining.")
+        else:
+            print("No active engine 2 fire.")
+        return True
+
+    if cmd.strip().lower() == "shutdown eng2":
+        if state.engine2_on:
+            state.engine2_on = False
+            state.score += 6
+            print("Engine 2 shutdown complete.")
+            if state.engine2_fire:
+                print("Fire intensity reducing after fuel cut-off.")
+        else:
+            print("Engine 2 already off.")
+        return True
+
+    if cmd.strip().lower() == "oxygen on":
+        if state.smoke_level > 0:
+            state.score += 5
+            state.smoke_level = max(0, state.smoke_level - 1)
+            print("Crew oxygen masks on. Smoke impact reduced.")
+        else:
+            print("Oxygen available; no smoke impact currently.")
+        return True
+
+    if parts[0] == "tick":
+        return True
+
+    print("Unknown command. Type 'help'.")
+    return False
 
 
 def print_summary(state: FlightState) -> None:
-    print("\n=== FLIGHT SUMMARY ===")
-    print(f"Altitude: {state.altitude_ft} ft")
-    print(f"Airspeed: {state.airspeed_kts} kts")
-    print(f"Engine fire active: {'YES' if state.engine_fire else 'NO'}")
-    print(f"Smoke in cabin: {'YES' if state.smoke_in_cabin else 'NO'}")
-    print(f"Electrical failure: {'YES' if state.electrical_failure else 'NO'}")
-    print(f"Fuel imbalance: {'YES' if state.fuel_imbalance else 'NO'}")
-    print(f"Safety score: {state.score}")
+    print("\n" + "=" * 70)
+    print("FINAL REPORT")
+    print(f"Time elapsed: {state.time_min} min")
+    print(f"Distance to airport: {state.distance_nm:.1f} nm")
+    print(f"Final altitude: {state.altitude_ft} ft")
+    print(f"Final speed: {state.speed_kts} kt")
+    print(f"Emergency declared: {'YES' if state.emergency_declared else 'NO'}")
+    print(f"Engine 2 fire active: {'YES' if state.engine2_fire else 'NO'}")
+    print(f"Score: {state.score}")
 
-    if state.game_over:
+    if state.landed:
+        if state.score >= 35:
+            print("Outcome: SUCCESSFUL EMERGENCY LANDING")
+        else:
+            print("Outcome: LANDED WITH MAJOR DAMAGE")
+    elif state.game_over:
         print("Outcome: FLIGHT LOST")
-    elif state.score >= 35:
-        print("Outcome: SUCCESSFUL EMERGENCY LANDING")
     else:
-        print("Outcome: HARD LANDING WITH SIGNIFICANT DAMAGE")
+        print("Outcome: SIM ENDED")
 
 
 def run_game() -> None:
-    print("""
-========================================
- FLIGHT INCIDENT SIMULATOR
-========================================
-You are the pilot in command of a twin-engine airliner.
-Make decisions as incidents escalate.
-""")
-
-    state = FlightState()
-    sequence: list[Callable[[FlightState], None]] = [
-        engine_smoke_event,
-        engine_fire_event,
-        cabin_smoke_event,
-        final_approach,
-    ]
-
-    for event in sequence:
-        if state.game_over:
-            break
-        event(state)
+    print(
+        """
 
     print_summary(state)
 
